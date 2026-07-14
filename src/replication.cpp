@@ -4324,6 +4324,12 @@ void replicationSendAck(redisMaster *mi)
  */
 void replicationCacheMaster(redisMaster *mi, client *c) {
     serverAssert(mi->master == c);
+    /* active-replica 断连/重连竞态下可能残留一个陈旧的 cached_master:此时新的 master 链路
+     * 已建立(mi->master==c),旧缓存已过时。与 replicationCacheMasterUsingMyself/UsingMaster
+     * 的处理保持一致——先丢弃旧缓存,再缓存当前(最新)master,避免此处断言 cached_master==NULL
+     * 在竞态下崩溃。丢弃旧缓存不影响部分重同步:随后会以当前 master c 的偏移重建缓存。 */
+    if (mi->cached_master != NULL)
+        replicationDiscardCachedMaster(mi);
     serverAssert(mi->master != NULL && mi->cached_master == NULL);
     serverLog(LL_NOTICE,"Caching the disconnected master state.");
     AssertCorrectThread(c);
