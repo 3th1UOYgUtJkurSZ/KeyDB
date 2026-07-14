@@ -1,0 +1,67 @@
+# KeyDB active-replica(双主)演示
+# 用法:
+#   docker compose up -d          # 拉起两节点
+#   docker compose ps             # 查看状态(healthy 表示复制链路已就绪)
+#   docker compose logs -f        # 看日志
+#   docker compose down           # 停止并清理
+#
+# 服务名 node-a / node-b 即为容器内可解析的主机名,
+# 与 node-a.conf / node-b.conf 里的 `replicaof node-b/node-a` 对应。
+#
+# ⚠️ 启动顺序注意事项(重要,否则可能丢数据)
+#   active-active 首次拉起时,两侧会各自向对端做一次全量同步(full resync)。
+#   若两节点【几乎同时冷启动】并在这个同步窗口内【各自并发写入】,
+#   一侧的全量 RDB 会覆盖对端刚写入的数据——即 keydb.conf 所说
+#   "the first master will win",表现为一部分写入凭空消失。
+#   进入增量复制稳定态后,双向同步才完全可靠。
+#
+#   规避做法:
+#     1) 不要两端同时冷启动后立刻并发写。本 compose 已用 depends_on 让
+#        node-b 在 node-a 变为 healthy 后再启动,减小同时同步的窗口;
+#        但 depends_on 只保证启动先后,仍需应用侧配合(见下)。
+#     2) 应用写入前,先确认双向链路稳定:
+#          docker exec node-a keydb-cli info replication | grep master_link_status  # 应为 up
+#        且 master_repl_offset 不再因全量同步跳变后再开始写。
+#     3) 若有初始数据,应【先起有数据的那个节点并等其就绪】,
+#        再起空节点去同步它,避免空库 RDB 覆盖有数据的一侧。
+#     4) 多节点时钟用 NTP 同步(冲突按 last-writer-wins 时间戳裁决)。
+
+services:
+  node-a:
+    build:
+      context: ../linux-x64_64                       # 交叉编译产物所在目录
+      dockerfile: ../active-replica-demo/Dockerfile
+    platform: linux/amd64                            # 在 arm64 宿主上用 amd64 运行
+    image: keydb-demo:local
+    container_name: node-a
+    command: ["/etc/keydb/keydb.conf"]
+    volumes:
+      - ./node-a.conf:/etc/keydb/keydb.conf:ro
+    ports:
+      - "6379:6379"                                  # 宿主 6379 -> node-a
+    healthcheck:
+      test: ["CMD", "keydb-cli", "ping"]
+      interval: 3s
+      timeout: 2s
+      retries: 10
+
+  node-b:
+    build:
+      context: ../linux-x64_64
+      dockerfile: ../active-replica-demo/Dockerfile
+    platform: linux/amd64
+    image: keydb-demo:local
+    container_name: node-b
+    command: ["/etc/keydb/keydb.conf"]
+    depends_on:
+      node-a:
+        condition: service_healthy                   # 等 node-a healthy 后再起,缩小同时全量同步窗口
+    volumes:
+      - ./node-b.conf:/etc/keydb/keydb.conf:ro
+    ports:
+      - "6380:6379"                                  # 宿主 6380 -> node-b
+    healthcheck:
+      test: ["CMD", "keydb-cli", "ping"]
+      interval: 3s
+      timeout: 2s
+      retries: 10

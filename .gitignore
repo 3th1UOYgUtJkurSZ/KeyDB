@@ -59,3 +59,16 @@ Makefile.dep
 .ccls-cache/*
 compile_commands.json
 keydb.code-workspace
+
+# KeyDB 交叉编译目标库缓存(由 build/build.sh 生成)
+build/.sysroot/
+
+# 隧道证书/私钥(由 build/conf/gen-certs.sh 本地生成,勿入库)
+build/conf/certs/
+build/conf/scripts/
+
+# 编译产物与打包(由 build/build.sh 生成,勿入库)
+build/linux-x64_64/
+build/darwin-arm64/
+build/*.tar.bz2
+build/*.tar.gz

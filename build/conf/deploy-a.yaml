@@ -1,0 +1,44 @@
+# ============================================================================
+# deploy-server @ 站点 A —— 跨云 KeyDB 双主的前端代理/网关
+#
+#   quic_proxy     : 对外(公网)暴露本站 keydb-a,供对端 deploy-b 隧道进来拉取
+#   redis_gateway  : 本地入口 6390,供 keydb-a replicaof;经隧道到对端 quic_proxy → keydb-b
+#
+# 证书路径相对本配置文件目录解析;先运行 ./gen-certs.sh 生成 certs/。
+# 占位符:<DEPLOY_B_PUBLIC_IP> 对端公网 IP;<TUNNEL_SECRET> 隧道 JWT 密钥(两端一致)。
+# ============================================================================
+
+host: 0.0.0.0
+port: 7981                       # deploy-server HTTP/运维接口(可选)
+script_dir: ./scripts
+
+# ---- 出口:对外暴露本站 keydb-a ----
+quic_proxy:
+  enabled: true
+  listen: 0.0.0.0:7982           # 公网 UDP(QUIC);安全组只放行 <DEPLOY_B_PUBLIC_IP>
+  cert_file: certs/deploy-a.crt  # 本节点服务端证书(SAN=deploy-a)
+  key_file: certs/deploy-a.key
+  client_ca_file: certs/ca.crt   # mTLS:强制校验客户端证书,只放行本 CA 签发者
+  allow_targets:
+    - 127.0.0.1:6379             # 只允许被隧道访问本站 keydb-a
+  keys:
+    xcloudKey: <TUNNEL_SECRET>   # 隧道 JWT:api_key -> secret(与对端 tunnel.api_secret 一致)
+  max_idle_timeout: 60s
+  keep_alive_period: 5s
+
+# ---- 入口:给 keydb-a 一个本地 replicaof 目标,隧道到对端 keydb-b ----
+redis_gateway:
+  enabled: true
+  listen: 127.0.0.1:6390         # keydb-a.conf: replicaof 127.0.0.1 6390
+  backend: 127.0.0.1:6379        # 对端 quic_proxy 要 dial 的地址(即 keydb-b,须在 deploy-b 的 allow_targets 内)
+  dial_timeout: 10s
+  tunnel:
+    enabled: true
+    quic_addr: <DEPLOY_B_PUBLIC_IP>:7982   # 对端 deploy-b 的 quic_proxy
+    api_key: xcloudKey
+    api_secret: <TUNNEL_SECRET>
+    server_name: deploy-b        # 校验对端服务端证书 SAN
+    ca_cert: certs/ca.crt        # 校验对端证书(公网必备)
+    client_cert: certs/client.crt   # mTLS 客户端证书
+    client_key: certs/client.key
+    idle_timeout: 60s
