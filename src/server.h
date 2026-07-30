@@ -1168,6 +1168,15 @@ public:
     bool syncDelete(robj *key);
     bool asyncDelete(robj *key);
     size_t expireSize() const { return m_numexpires; }
+    /* Only for DEBUG CORRUPT-EXPIRES-COUNT, so tests can exercise the RDB
+     * writer's recovery path without reproducing the accounting bug itself. */
+    void corruptExpiresCountForTesting(long long delta) {
+        if (delta < 0 && (size_t)-delta > m_numexpires)
+            m_numexpires = 0;
+        else
+            m_numexpires += delta;
+    }
+    void resetExpiresCount(size_t count) { m_numexpires = count; }
     int removeExpire(robj *key, dict_iter itr);
     int removeSubkeyExpire(robj *key, robj *subkey);
     void clear(void(callback)(void*));
@@ -1352,6 +1361,8 @@ struct redisDb : public redisDbPersistentDataSnapshot
     using redisDbPersistentData::syncDelete;
     using redisDbPersistentData::asyncDelete;
     using redisDbPersistentData::expireSize;
+    using redisDbPersistentData::corruptExpiresCountForTesting;
+    using redisDbPersistentData::resetExpiresCount;
     using redisDbPersistentData::removeExpire;
     using redisDbPersistentData::removeSubkeyExpire;
     using redisDbPersistentData::clear;
@@ -2291,6 +2302,12 @@ struct redisServer {
     mode_t umask;               /* The umask value of the process on startup */
     std::atomic<int> hz;        /* serverCron() calls frequency in hertz */
     int in_fork_child;          /* indication that this is a fork child */
+    int crash_in_fork_child = 0;/* DEBUG only: make the next fork child crash
+                                   right after it finishes forking, so that the
+                                   crash handler can be exercised in a child. */
+    int crash_during_crash_report = 0;
+                                /* DEBUG only: fault once while writing the
+                                   crash report, to exercise a nested crash. */
     IStorage *metadataDb = nullptr;
     redisDb **db = nullptr;
     dict *commands;             /* Command table */

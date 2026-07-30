@@ -6976,6 +6976,8 @@ int redisFork(int purpose) {
         setOOMScoreAdj(CONFIG_OOM_BGCHILD);
         setupChildSignalHandlers();
         closeChildUnusedResourceAfterFork();
+        if (g_pserver->crash_in_fork_child)
+            serverPanic("DEBUG CRASH-IN-FORK-CHILD requested");
     } else {
         /* Parent */
         aeReleaseForkLock();

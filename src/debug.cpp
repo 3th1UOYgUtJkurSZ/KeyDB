@@ -413,8 +413,17 @@ void debugCommand(client *c) {
 "    keywords not listed in original configuration file or default values.",
 "CRASH-AND-RECOVER <milliseconds>",
 "    Hard crash and restart after a <milliseconds> delay.",
+"CRASH-DURING-CRASH-REPORT <0|1>",
+"    Fault once while the next crash report is being written. Used to",
+"    exercise a crash nested inside the crash handler.",
+"CRASH-IN-FORK-CHILD <0|1>",
+"    Make every subsequent fork child crash right after forking. Used to",
+"    exercise the crash handler inside a fork child.",
 "DIGEST",
 "    Output a hex signature representing the current DB content.",
+"EXPIRES-CONSISTENCY",
+"    Return [expireSize, keys-carrying-an-expire]. These must be equal; the",
+"    RDB writer asserts on it. Use to observe expire accounting drift.",
 "DIGEST-VALUE <key> [<key> ...]",
 "    Output a hex signature of the values of all the specified keys.",
 "ERROR <string>",
@@ -831,6 +840,60 @@ NULL
         tv.tv_nsec = (utime % 1000000) * 1000;
         nanosleep(&tv, NULL);
         addReply(c,shared.ok);
+    } else if (!strcasecmp(szFromObj(c->argv[1]),"crash-in-fork-child") &&
+               c->argc == 3)
+    {
+        g_pserver->crash_in_fork_child = atoi(szFromObj(c->argv[2]));
+        addReply(c,shared.ok);
+    } else if (!strcasecmp(szFromObj(c->argv[1]),"crash-during-crash-report") &&
+               c->argc == 3)
+    {
+        g_pserver->crash_during_crash_report = atoi(szFromObj(c->argv[2]));
+        addReply(c,shared.ok);
+    } else if (!strcasecmp(szFromObj(c->argv[1]),"corrupt-expires-count") &&
+               c->argc == 3)
+    {
+        /* DEBUG only: skew the expire counter so the RDB writer's recovery path
+         * can be exercised without having to reproduce the accounting bug. */
+        c->db->corruptExpiresCountForTesting(atoll(szFromObj(c->argv[2])));
+        addReply(c,shared.ok);
+    } else if (!strcasecmp(szFromObj(c->argv[1]),"snapshot-hold") &&
+               c->argc == 3)
+    {
+        /* DEBUG only: hold a snapshot open across commands, so tests can drive
+         * the snapshot-only code paths deterministically instead of racing a
+         * KEYS/async-read snapshot. */
+        static const redisDbPersistentDataSnapshot *s_rgheld[16] = {};
+        int idb = c->db->id;
+        if (idb >= (int)(sizeof(s_rgheld)/sizeof(s_rgheld[0]))) {
+            addReplyError(c,"db index out of range for snapshot-hold");
+        } else if (atoi(szFromObj(c->argv[2]))) {
+            if (s_rgheld[idb] == nullptr)
+                s_rgheld[idb] = c->db->createSnapshot(getMvccTstamp(), false /*fOptional*/);
+            if (s_rgheld[idb] == nullptr)
+                addReplyError(c,"could not create snapshot");
+            else
+                addReply(c,shared.ok);
+        } else {
+            if (s_rgheld[idb] != nullptr) {
+                c->db->endSnapshot(s_rgheld[idb]);
+                s_rgheld[idb] = nullptr;
+            }
+            addReply(c,shared.ok);
+        }
+    } else if (!strcasecmp(szFromObj(c->argv[1]),"expires-consistency")) {
+        /* Report the invariant that rdbSaveRio() asserts on: the number of keys
+         * carrying an expire must equal expireSize(). Reported rather than
+         * asserted, so a drift can be observed without killing the server. */
+        size_t counted = 0;
+        c->db->iterate_threadsafe([&](const char *, robj_roptr o)->bool {
+            if (o != nullptr && o->FExpires())
+                ++counted;
+            return true;
+        });
+        addReplyArrayLen(c,2);
+        addReplyLongLong(c,(long long)c->db->expireSize());
+        addReplyLongLong(c,(long long)counted);
     } else if (!strcasecmp(szFromObj(c->argv[1]),"set-active-expire") &&
                c->argc == 3)
     {
@@ -1945,6 +2008,17 @@ static void killServerThreads(void) {
  * Currently Redis does this only on crash (for instance on SIGSEGV) in order
  * to perform a fast memory check without other threads messing with memory. */
 void killThreads(void) {
+    /* Never do this in a fork child: fork() only clones the calling thread, so
+     * every pthread_t here refers to a thread that does not exist, and
+     * cancelling or joining such a handle is undefined behaviour. Depending on
+     * the glibc version it returns ESRCH, segfaults inside pthread_cancel(), or
+     * blocks forever in pthread_join(). The latter two strand the child in its
+     * own crash handler, still holding every fd it inherited -- accepted client
+     * and replica connections included, which then hang instead of being reset
+     * -- and deaf to SIGTERM, whose inherited handler only sets shutdown_asap
+     * for an event loop that is not running here. */
+    if (g_pserver->in_fork_child != CHILD_TYPE_NONE)
+        return;
     killServerThreads();
     bioKillThreads();
 }
@@ -2067,8 +2141,30 @@ void sigsegvHandler(int sig, siginfo_t *info, void *secret) {
 void printCrashReport(void) {
     g_fInCrash = true;
 
+    /* Anything below can crash -- logCurrentClient() walks a client that may be
+     * the corrupted memory we are reporting on, and logModulesInfo() calls into
+     * module code. Such a crash re-enters here through sigsegvHandler(), and
+     * running the report a second time is not merely noisy: it repeats
+     * killThreads(), whose pthread_join() now targets a pthread_t the first pass
+     * already joined, and that blocks forever. So write the body once. The
+     * nested signal still gets its own header, stack trace and registers from
+     * sigsegvHandler() before reaching this point, which is the part that says
+     * where the nested crash happened. */
+    static volatile char reported = 0;
+    if (__atomic_test_and_set(&reported, __ATOMIC_SEQ_CST))
+        return;
+
     /* Log INFO and CLIENT LIST */
     logServerInfo();
+
+    if (g_pserver->crash_during_crash_report) {
+        /* DEBUG only. Fault once, so that a nested crash arrives while this
+         * report is still being written. */
+        g_pserver->crash_during_crash_report = 0;
+        serverLogRaw(LL_WARNING|LL_RAW,
+            "\n------ DEBUG: FAULTING INSIDE THE CRASH REPORT ------\n");
+        *((volatile char*)-1) = 'x';
+    }
 
     /* Log the current client */
     logCurrentClient();

@@ -2711,6 +2711,19 @@ void redisDbPersistentData::prepOverwriteForSnapshot(char *key)
         auto itr = m_pdbSnapshot->find_cached_threadsafe(key);
         if (itr.key() != nullptr)
         {
+            /* Planting the tombstone here is what lets ensure() skip
+             * materializing the old value: we are about to overwrite it anyway.
+             * But then insert()'s dictAdd() succeeds, dbAddCore() reports an
+             * insert, and the caller never runs its overwrite path -- so an
+             * expire on the old value is neither cleared nor counted down, and
+             * a SET ... KEEPTTL silently loses the TTL. When the snapshot's
+             * value carries an expire we therefore leave the tombstone alone
+             * and let ensure() bring the old value across (it plants its own
+             * tombstone), so the overwrite path can account for the expire.
+             * This mirrors why LFU bails out above: skipping the old value
+             * loses information the caller still needs. */
+            if (itr.val() != nullptr && itr.val()->FExpires())
+                return;
             sds keyNew = sdsdupshared(itr.key());
             if (dictAdd(m_pdictTombstone, keyNew, (void*)dictHashKey(m_pdict, key)) != DICT_OK)
                 sdsfree(keyNew);

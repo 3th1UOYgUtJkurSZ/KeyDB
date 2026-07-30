@@ -1369,7 +1369,23 @@ int rdbSaveRio(rio *rdb, const redisDbPersistentDataSnapshot **rgpdb, int *error
         });
         if (!fSavedAll)
             goto werr;
-        serverAssert(ckeysExpired == db->expireSize());
+        if (ckeysExpired != expires_size) {
+            /* The expire counter drifted from the number of keys we actually
+             * saw carrying an expire. Warn, don't die: this count only feeds
+             * the RESIZEDB preallocation hint above, so the RDB we just wrote
+             * is still correct and loadable. Asserting here would abort the
+             * save, and a save that cannot complete means replicas can never
+             * full-sync -- one stale count would take the whole server out.
+             * The drift itself is a real bug elsewhere in expire accounting,
+             * so make it loud. DEBUG EXPIRES-CONSISTENCY reports the same
+             * invariant on a live server, and reloading rebuilds the count. */
+            serverLog(LL_WARNING,
+                "Expire count mismatch saving db %d: counted %zu keys carrying "
+                "an expire, but expireSize() reports %llu. The RDB is still "
+                "valid (the count is only a preallocation hint). This is a bug "
+                "in expire accounting -- please report it.",
+                j, ckeysExpired, (unsigned long long)expires_size);
+        }
     }
 
     /* If we are storing the replication information on disk, persist
