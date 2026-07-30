@@ -630,15 +630,27 @@ void expireSlaveKeys(void) {
                         size_t tried = 0;
                         expired = activeExpireCycleExpire(g_pserver->db[dbid],itrDB.key(),itrDB->expire,start,tried);
                     }
-                }
 
-                /* If the key was not expired in this DB, we need to set the
-                 * corresponding bit in the new bitmap we set as value.
-                 * At the end of the loop if the bitmap is zero, it means we
-                 * no longer need to keep track of this key. */
-                if (itrDB != db->end() && itrDB->FExpires() && !expired) {
-                    noexpire++;
-                    new_dbids |= (uint64_t)1 << dbid;
+                    /* If the key was not expired in this DB, we need to set the
+                     * corresponding bit in the new bitmap we set as value.
+                     * At the end of the loop if the bitmap is zero, it means we
+                     * no longer need to keep track of this key.
+                     *
+                     * Look the key up again rather than reusing itrDB:
+                     * activeExpireCycleExpire() deletes the key when it expires
+                     * the whole thing, which frees the object itrDB points at.
+                     * A non-zero `expired` is not enough to tell us the key is
+                     * gone either -- for a subkey expire it only counts the
+                     * members that went away, and the key itself may still be
+                     * here with an expire still on it. Upstream Redis gets away
+                     * with a stale pointer here because it only ever tests it
+                     * for NULL; KeyDB keeps the expire inside the object, so
+                     * touching it after the delete is a use-after-free. */
+                    auto itrAfter = db->find(keyname);
+                    if (itrAfter != db->end() && itrAfter->FExpires()) {
+                        noexpire++;
+                        new_dbids |= (uint64_t)1 << dbid;
+                    }
                 }
             }
             dbid++;

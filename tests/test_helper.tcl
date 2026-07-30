@@ -93,7 +93,7 @@ set ::all_tests {
     integration/snapshot-overwrite-expire
     integration/flush-async-snapshot
     integration/active-replica-cached-master
-    integration/active-replica-cached-master
+    integration/writable-replica-expire
     integration/corrupt-dump
     integration/corrupt-dump-fuzzer
     unit/soft_shutdown
