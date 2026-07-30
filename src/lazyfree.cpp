@@ -20,9 +20,12 @@ void lazyfreeFreeObject(void *args[]) {
  * when the database was logically deleted. */
 void lazyfreeFreeDatabase(void *args[]) {
     dict *ht1 = (dict *) args[0];
+    dict *ht2 = (dict *) args[1];
 
     size_t numkeys = dictSize(ht1);
     dictRelease(ht1);
+    if (ht2 != nullptr)
+        dictRelease(ht2);   /* the tombstone dict, when the caller replaced it */
     atomicDecr(lazyfree_objects,numkeys);
     atomicIncr(lazyfreed_objects,numkeys);
 }
@@ -216,14 +219,24 @@ void freeObjAsync(robj *key, robj *obj) {
  * lazy freeing. */
 void redisDbPersistentData::emptyDbAsync() {
     dict *oldht1 = m_pdict;
+    dict *oldtombstone = m_pdictTombstone;
     m_pdict = dictCreate(&dbDictType,this);
+    m_pdictTombstone = dictCreate(&dbTombstoneDictType,this);
     if (m_spstorage != nullptr)
         m_spstorage->clearAsync();
     if (m_fTrackingChanges)
         m_fAllChanged = true;
     atomicIncr(lazyfree_objects,dictSize(oldht1));
+    /* Detach the snapshot and drop the tombstones, exactly as the synchronous
+     * clear() does. Leaving the snapshot attached means ensure() will happily
+     * materialize the keys we just flushed straight back out of it -- the flush
+     * silently does nothing -- and because ensure() never bumps m_numexpires,
+     * a resurrected volatile key then trips the m_numexpires > 0 assert in
+     * removeExpire(). The tombstones have to go with it: they only describe
+     * keys in the snapshot we are letting go of. */
+    m_pdbSnapshot = nullptr;
     m_numexpires = 0;
-    bioCreateLazyFreeJob(lazyfreeFreeDatabase,2,oldht1,nullptr);
+    bioCreateLazyFreeJob(lazyfreeFreeDatabase,2,oldht1,oldtombstone);
 }
 
 /* Release the radix tree mapping Redis Cluster keys to slots asynchronously. */

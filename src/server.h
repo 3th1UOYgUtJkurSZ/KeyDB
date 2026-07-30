@@ -3937,7 +3937,7 @@ int FBrokenLinkToMaster(int *pconnectMasters = nullptr);
 int FActiveMaster(client *c);
 struct redisMaster *MasterInfoFromClient(client *c);
 bool FInReplicaReplay();
-void updateActiveReplicaMastersFromRsi(rdbSaveInfo *rsi);
+void updateActiveReplicaMastersFromRsi(rdbSaveInfo *rsi, redisMaster *miSyncing = nullptr);
 
 /* MVCC */
 uint64_t getMvccTstamp();

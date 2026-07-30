@@ -3546,18 +3546,33 @@ eoferr:
     return C_ERR;
 }
 
-void updateActiveReplicaMastersFromRsi(rdbSaveInfo *rsi) {
+void updateActiveReplicaMastersFromRsi(rdbSaveInfo *rsi, redisMaster *miSyncing) {
     if (rsi != nullptr && g_pserver->fActiveReplica) {
         serverLog(LL_NOTICE, "RDB contains information on %d masters", (int)rsi->numMasters());
         listIter li;
         listNode *ln;
-        
+
         listRewind(g_pserver->masters, &li);
         while ((ln = listNext(&li)))
         {
             redisMaster *mi = (redisMaster*)listNodeValue(ln);
             if (mi->master != nullptr) {
                 continue; //ignore connected masters
+            }
+            if (mi == miSyncing) {
+                /* This is the master whose RDB we are loading right now. Its
+                 * master client is installed by the caller as soon as we return,
+                 * so it only looks unconnected from here. Caching a master for
+                 * it would leave it with both master and cached_master set, and
+                 * the next time the link drops replicationCacheMaster() asserts
+                 * on exactly that.
+                 *
+                 * Note this is easy to hit: master entries are matched by
+                 * masterhost:masterport, and when peers are reached through
+                 * local tunnel ports every node's master list is textually
+                 * identical, so the entry for the master being synced from
+                 * reliably finds a match here. */
+                continue;
             }
             for (size_t i = 0; i < rsi->numMasters(); i++) {
                 if (!sdscmp(mi->masterhost, (sds)rsi->vecmastersaveinfo[i].masterhost.get()) && mi->masterport == rsi->vecmastersaveinfo[i].masterport) {

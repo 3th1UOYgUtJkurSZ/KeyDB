@@ -857,6 +857,27 @@ NULL
          * can be exercised without having to reproduce the accounting bug. */
         c->db->corruptExpiresCountForTesting(atoll(szFromObj(c->argv[2])));
         addReply(c,shared.ok);
+    } else if (!strcasecmp(szFromObj(c->argv[1]),"plant-stale-cached-master")) {
+        /* DEBUG only: leave every connected master with a cached_master as well.
+         * updateActiveReplicaMastersFromRsi() used to produce exactly this state
+         * for the master it was syncing from, and the next link drop was fatal. */
+        int planted = 0;
+        listIter liMaster;
+        listNode *lnMaster;
+        listRewind(g_pserver->masters, &liMaster);
+        while ((lnMaster = listNext(&liMaster)) != nullptr) {
+            redisMaster *mi = (redisMaster*)listNodeValue(lnMaster);
+            if (mi->master == nullptr || mi->cached_master != nullptr)
+                continue;
+            client *cStale = createClient(nullptr, c->iel);
+            cStale->flags |= CLIENT_MASTER;
+            memcpy(cStale->replid, mi->master->replid, sizeof(cStale->replid));
+            cStale->reploff = mi->master->reploff;
+            unlinkClient(cStale);
+            mi->cached_master = cStale;
+            planted++;
+        }
+        addReplyLongLong(c, planted);
     } else if (!strcasecmp(szFromObj(c->argv[1]),"snapshot-hold") &&
                c->argc == 3)
     {

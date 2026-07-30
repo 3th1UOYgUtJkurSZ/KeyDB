@@ -2887,7 +2887,7 @@ bool readSyncBulkPayloadRdb(connection *conn, redisMaster *mi, rdbSaveInfo &rsi,
              * gets promoted. */
             return false;
         }
-        if (g_pserver->fActiveReplica) updateActiveReplicaMastersFromRsi(&rsi);
+        if (g_pserver->fActiveReplica) updateActiveReplicaMastersFromRsi(&rsi, mi);
 
         /* RDB loading succeeded if we reach this point. */
         if (g_pserver->repl_diskless_load == REPL_DISKLESS_LOAD_SWAPDB) {
@@ -2983,7 +2983,7 @@ bool readSyncBulkPayloadRdb(connection *conn, redisMaster *mi, rdbSaveInfo &rsi,
                it'll be restarted when sync succeeds or replica promoted. */
             return false;
         }
-        if (g_pserver->fActiveReplica) updateActiveReplicaMastersFromRsi(&rsi);
+        if (g_pserver->fActiveReplica) updateActiveReplicaMastersFromRsi(&rsi, mi);
 
         /* Cleanup. */
         if (g_pserver->rdb_del_sync_files && allPersistenceDisabled()) {
@@ -4324,7 +4324,18 @@ void replicationSendAck(redisMaster *mi)
  */
 void replicationCacheMaster(redisMaster *mi, client *c) {
     serverAssert(mi->master == c);
-    serverAssert(mi->master != NULL && mi->cached_master == NULL);
+    serverAssert(mi->master != NULL);
+    if (mi->cached_master != NULL) {
+        /* We are about to cache the master that just went away, but a cached
+         * master is already sitting here. It cannot be useful: it describes an
+         * older link to this same master, and the one we are replacing it with
+         * is strictly newer. Drop it rather than die -- this used to be part of
+         * the assert above, and one stale entry took the whole server down. */
+        serverLog(LL_WARNING,
+            "Found a stale cached master for %s:%d while caching the current "
+            "one; discarding it.", mi->masterhost, mi->masterport);
+        replicationDiscardCachedMaster(mi);
+    }
     serverLog(LL_NOTICE,"Caching the disconnected master state.");
     AssertCorrectThread(c);
     std::lock_guard<decltype(c->lock)> clientlock(c->lock);

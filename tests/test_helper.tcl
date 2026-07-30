@@ -91,6 +91,9 @@ set ::all_tests {
     integration/fork-child-crash
     integration/expire-count-drift
     integration/snapshot-overwrite-expire
+    integration/flush-async-snapshot
+    integration/active-replica-cached-master
+    integration/active-replica-cached-master
     integration/corrupt-dump
     integration/corrupt-dump-fuzzer
     unit/soft_shutdown
