@@ -41,6 +41,19 @@ TARGET="${1:-all}"
 log()  { printf '\033[1;34m==>\033[0m %s\n' "$*"; }
 die()  { printf '\033[1;31merror:\033[0m %s\n' "$*" >&2; exit 1; }
 
+# macOS 自带的 BSD tar 会把 AppleDouble(._*)条目与扩展属性写进归档,解到 Linux 上
+# 会多出一堆垃圾文件;装了 gtar(brew install gnu-tar)就优先用它。
+TAR="$(command -v gtar || command -v tar)" || die "找不到 tar"
+
+# ---- 打包产物 ----
+# 只打包 BINARIES 里列出的文件:用 keydb-* 通配会把上一轮生成的 keydb-bin.tar.bz2
+# 自己也打进去。放在子 shell 里 cd,避免污染调用方的工作目录。
+package() {                     # package <dest_dir>
+  local dest="$1"
+  ( cd "$dest" && "$TAR" -jcf keydb-bin.tar.bz2 "${BINARIES[@]}" )
+  log "打包 -> $dest/keydb-bin.tar.bz2($(basename "$TAR"))"
+}
+
 # ---- 准备 Linux 目标 sysroot(带缓存)----
 prepare_linux_sysroot() {
   if [ -f "$LOS/libcrypto.a" ] && [ -f "$LOS/libz.a" ] && [ -f "$LOS/libuuid.a" ] && [ -d "$INC/openssl" ]; then
@@ -103,6 +116,7 @@ build_linux() {
   log "校验 Linux 产物依赖(应仅 glibc 核心库):"
   "${LINUX_TRIPLE}-readelf" -d "$dest/keydb-server" | awk '/NEEDED/{print "    " $NF}'
   log "Linux 产物 -> $dest"
+  package "$dest"
 }
 
 # ---- 构建 darwin-arm64(本机)----
@@ -122,6 +136,7 @@ build_darwin() {
   done
   log "验证:$("$dest/keydb-server" --version)"
   log "darwin 产物 -> $dest"
+  package "$dest"
 }
 
 case "$TARGET" in
